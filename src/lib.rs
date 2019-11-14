@@ -97,10 +97,7 @@ impl ClientContext {
             params.insert(key, value);
         }
 
-        let encoded_params_strs = params.iter()
-                                        .map(|(key, value)| format!("{}={}", key, encode(value)))
-                                        .collect::<Vec<String>>()
-                                        .join("&");
+        let encoded_params_strs = format_map_with_encode(&params, "", "&", true);
 
         let oauth_signature = {
             let signature_param = format!("{}&{}&{}", encode(method.to_uppercase().as_str()), encode(&url), encode(&encoded_params_strs));
@@ -112,17 +109,9 @@ impl ClientContext {
 
         params.insert("oauth_signature", &oauth_signature);
 
-        let authorization = format!("OAuth {}", params.iter()
-                                                      .filter(|&(key, _)| key.starts_with("oauth_"))
-                                                      .map(|(key, value)| format!("{}=\"{}\"", key, encode(value)))
-                                                      .collect::<Vec<String>>()
-                                                      .join(", "));
+        let authorization = format!("OAuth {}", format_map_with_encode(&params, "\"", ", ", true));
 
-        let body = params.iter()
-                         .filter(|&(k, _)| !k.starts_with("oauth_"))
-                         .map(|(k, v)| format!("{}={}", k, encode(v)))
-                         .collect::<Vec<String>>()
-                         .join("&");
+        let body = format_map_with_encode(&params, "", "&", false);
 
         let mut headers = Vec::new();
         headers.push(("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string()));
@@ -130,6 +119,14 @@ impl ClientContext {
 
         return (headers, body);
     }
+}
+
+pub fn format_map_with_encode(map: &BTreeMap<&str, &str>, delimiter: &str, separator: &str, for_oauth: bool) -> String {
+    map.iter()
+       .filter(|&(k, _)| k.starts_with("oauth_") == for_oauth)
+       .map(|(k, v)| format!("{}={}{}{}", k, delimiter, encode(v), delimiter))
+       .collect::<Vec<String>>()
+       .join(separator)
 }
 
 pub fn generate_nonce() -> String {
