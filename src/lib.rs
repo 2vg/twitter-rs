@@ -1,3 +1,5 @@
+pub mod official;
+
 extern crate base64;
 extern crate crypto;
 extern crate rand;
@@ -5,6 +7,8 @@ extern crate serde_json;
 extern crate time;
 extern crate ureq;
 extern crate url;
+
+use crate::official::*;
 
 use crypto::sha1::Sha1;
 use crypto::hmac::Hmac;
@@ -15,8 +19,9 @@ use url::form_urlencoded;
 
 use std::collections::{BTreeMap, HashMap};
 
-const AUTHORIZE_URL: &'static str = "https://api.twitter.com/oauth/authorize?force_login=1&oauth_token=";
+const AUTHORIZE_URL: &'static str = "https://api.twitter.com/oauth/authorize?oauth_token=";
 const REQUEST_TOKEN_URL: &'static str = "https://api.twitter.com/oauth/request_token";
+const REQUEST_ACCESS_TOKEN_URL: &'static str = "https://api.twitter.com/oauth/access_token";
 
 pub const ANDROID_CK: &'static str = "3nVuSoBZnx6U4vzUxf5w";
 pub const ANDROID_CS: &'static str = "Bcs59EFbbsdF6Sl9Ng71smgStWEGwXXKSjYvPVt7qys";
@@ -28,10 +33,12 @@ pub const IPAD_CK: &'static str = "CjulERsDeqhhjSme66ECg";
 pub const IPAD_CS: &'static str = "IQWdVyqFxghAtURHGeGiWAsmCAGmdW3WmbEx6Hck";
 
 pub struct ClientContext {
-    consumer_key: String,
-    consumer_secret: String,
-    access_token: String,
-    access_token_secret: String,
+    pub consumer_key: String,
+    pub consumer_secret: String,
+    oauth_token: String,
+    oauth_access_token: String,
+    pub access_token: String,
+    pub access_token_secret: String,
 }
 
 impl ClientContext {
@@ -39,27 +46,59 @@ impl ClientContext {
         return ClientContext{
             consumer_key: _ck.into(),
             consumer_secret: _cs.into(),
+            oauth_token: "".into(),
+            oauth_access_token: "".into(),
             access_token: _at.into(),
             access_token_secret: _as.into()
         };
     }
 
+    /*
     pub fn new_with_oauth_scarping(_ck: impl Into<String>, _cs: impl Into<String>, username: impl Into<String>, password: impl Into<String>) -> Result<ClientContext, String> {
         let mut ctx = ClientContext::new(_ck, _cs, "", "");
         let request_url = ctx.get_request_url();
 
         println!("{}", &request_url);
 
-        
-
         Ok(ctx)
     }
+    */
 
-    pub fn new_with_xauth(&mut self, username: impl Into<String>, password: impl Into<String>) -> (&str, &str) {
-        println!("{}", "hello");
-        let a = "";
-        let b = "";
-        return (a, b);
+    pub fn new_with_xauth(username: impl Into<String>, password: impl Into<String>, kind: OfficialClient) -> ClientContext {
+        let mut ctx = match kind {
+            OfficialClient::android => { ClientContext::new(ANDROID_CK, ANDROID_CS, "", "") },
+            OfficialClient::iphone => { ClientContext::new(IPHONE_CK, IPHONE_CS, "", "") },
+            OfficialClient::ipad => { ClientContext::new(IPAD_CK, IPAD_CS, "", "") },
+            OfficialClient::windows => { ClientContext::new(WINDOWS_CK, WINDOWS_CS, "", "") },
+            OfficialClient::windows_phone => { ClientContext::new(WINDOWS_PHONE_CK, WINDOWS_PHONE_CS, "", "") },
+            OfficialClient::google => { ClientContext::new(GOOGLE_CK, GOOGLE_CS, "", "") },
+            OfficialClient::mac => { ClientContext::new(MAC_CK, MAC_CS, "", "") }
+        };
+
+        let (username, password) = (username.into(), password.into());
+
+        let mut params = BTreeMap::<&str, &str>::new();
+        params.insert("x_auth_mode", "client_auth");
+        params.insert("x_auth_username", &username);
+        params.insert("x_auth_password", &password);
+        let (headers, body) = ctx.build_oauth_request("POST", REQUEST_ACCESS_TOKEN_URL, params);
+
+        println!("{:?}", &headers);
+        println!("{:?}", &body);
+
+        let body = post_request(REQUEST_ACCESS_TOKEN_URL, Some(headers), "");
+        println!("{:?}", &body);
+
+        match body {
+            Ok(body) => {
+                let (token, secret) = parse_oauth_token(&body);
+                ctx.access_token = token.to_string();
+                ctx.access_token_secret = secret.to_string();
+            },
+            Err(msg) => { println!("{}", msg); }
+        }
+
+        return ctx;
     }
 
     pub fn get_request_url(&mut self) -> String {
@@ -72,40 +111,55 @@ impl ClientContext {
         match body {
             Ok(body) => {
                 let (token, secret) = parse_oauth_token(&body);
-                self.access_token = token.to_string();
-                self.access_token_secret = secret.to_string();
+                self.oauth_token = token.to_string();
+                self.oauth_access_token = secret.to_string();
                 format!("{}{}", AUTHORIZE_URL, token)
             },
             Err(msg) => { msg }
         }
     }
 
-    pub fn get_pincode(&self, url: &str, username: &str, password: &str) -> String {
-        let res = ureq::get(&url)
-                    .timeout_read(1_000)
-                    .timeout_connect(1_000)
-                    .call();
-        let session_cookie = res.header("Set-Cookie").unwrap().to_string();
-        let html = res.into_string().unwrap();
-        let authenticity_token = authenticity_token_scraping(&html);
-        let headers = vec![("Cookie".to_string(), session_cookie),
-                           ("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string())];
+    pub fn get_access_token(&mut self, verifier: impl Into<String>) {
+        let verifier = verifier.into();
 
-        println!("{}", &html);
+        let mut params: BTreeMap<&str, &str> = BTreeMap::new();
+        params.insert("oauth_token", &self.oauth_token);
+        params.insert("oauth_verifier", &verifier);
+        let (headers, _) = self.build_oauth_request("POST", REQUEST_ACCESS_TOKEN_URL, params);
+
+        let body = post_request(REQUEST_ACCESS_TOKEN_URL, Some(headers), "");
+
+        match body {
+            Ok(body) => {
+                let (token, secret) = parse_oauth_token(&body);
+                self.access_token = token.to_string();
+                self.access_token_secret = secret.to_string();
+            },
+            Err(msg) => { println!("{}", msg); }
+        }
+    }
+
+    /*
+    pub fn get_pincode(&self, url: &str, username: &str, password: &str) -> String {
+        let html = get_request(url, None, None).unwrap();
+        let authenticity_token = authenticity_token_scraping(&html);
+        let headers = vec![("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string())];
+
         let mut params = BTreeMap::<&str, &str>::new();
         params.insert("authenticity_token", &authenticity_token);
         params.insert("oauth_token", &self.access_token);
-        params.insert("redirect_after_login", &url);
-        params.insert("session[username_or_email]", username);
-        params.insert("session[password]", password);
+        params.insert("redirect_after_login", url);
+        params.insert("session%5Busername_or_email%5D", username);
+        params.insert("session%5Bpassword%5D", password);
 
         let body = format_map_with_encode(&params, "", "&", false);
+        println!("{}", &url);
         println!("{}", &body);
-        let res = post_request("https://api.twitter.com/oauth/authorize", Some(headers), body);
-
-        println!("{}", res.unwrap());
+        //let res = post_request(url, Some(headers), body);
+        //println!("{}", res.unwrap());
         "".to_string()
     }
+    */
 
     pub fn build_oauth_request(
         &self,
@@ -129,7 +183,7 @@ impl ClientContext {
         params.insert("oauth_timestamp", &time_now);
         params.insert("oauth_version", "1.0");
 
-        for (key, value) in append_params {
+        for (key, value) in &append_params {
             params.insert(key, value);
         }
 
@@ -152,6 +206,15 @@ impl ClientContext {
         let mut headers = Vec::new();
         headers.push(("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string()));
         headers.push(("Authorization".to_string(), authorization));
+
+        for (k, v) in append_params {
+            match k {
+                "x_auth_mode" => { headers.push(("x_auth_mode".to_string(), v.to_string())); },
+                "x_auth_username" => { headers.push(("x_auth_username".to_string(), v.to_string())); },
+                "x_auth_password" => { headers.push(("x_auth_password".to_string(), v.to_string())); },
+                _ => {}
+            }
+        }
 
         return (headers, body);
     }
@@ -242,6 +305,15 @@ fn parse_oauth_token<'a>(strings: &'a str) -> (&'a str, &'a str) {
     (splits[0], splits[1])
 }
 
+fn generate_nonce() -> String {
+    rand::thread_rng().sample_iter(Alphanumeric).take(32).collect::<String>()
+}
+
+fn encode(s: &str) -> String {
+    form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>()
+}
+
+/*
 fn authenticity_token_scraping(html: &str) -> String {
     let pattern = "<input name=\"authenticity_token\" type=\"hidden\" value=\"";
     let found = html.find(pattern);
@@ -267,12 +339,4 @@ fn pincode_scraping(html: &str) -> String {
     
     html[pin_idx_first..pin_idx_last].to_string()
 }
-
-fn generate_nonce() -> String {
-    rand::thread_rng().sample_iter(Alphanumeric).take(32).collect::<String>()
-}
-
-fn encode(s: &str) -> String {
-    form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>()
-}
-
+*/
